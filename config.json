@@ -1,0 +1,26 @@
+{
+  "locations": [
+    {
+      "name": "HOME",
+      "place": "Bisley, Stroud",
+      "lat": 51.75235,
+      "lon": -2.14116,
+      "rainfall": {
+        "source": "ea",
+        "station": "1141",
+        "label": "Miserden"
+      }
+    },
+    {
+      "name": "FAGWR",
+      "place": "Dinas Cross, Pembrokeshire",
+      "lat": 52.01267,
+      "lon": -4.89712,
+      "rainfall": {
+        "source": "nrw",
+        "station": "Maenclochog",
+        "label": "Maenclochog"
+      }
+    }
+  ]
+}
