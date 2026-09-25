@@ -1,7 +1,7 @@
 {
   "locations": [
     {
-      "name": "HOME",
+      "name": "COP",
       "place": "Bisley, Stroud",
       "lat": 51.75235,
       "lon": -2.14116,
@@ -12,7 +12,7 @@
       }
     },
     {
-      "name": "FAGWR",
+      "name": "FAG",
       "place": "Dinas Cross, Pembrokeshire",
       "lat": 52.01267,
       "lon": -4.89712,
