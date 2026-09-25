@@ -9,11 +9,12 @@ Both are 15-minute totals in millimetres, summed for the last 24 hours and 7 day
 This uses Environment Agency rainfall data from the real-time data API (Beta).
 Contains Natural Resources Wales information © Natural Resources Wales and Database Right.
 
-The Note is 3 rows by 15 columns. F is the Beaufort force:
+The Note is 3 rows by 15 columns. H is the last 24 hours of rain,
+7D is the last 7 days, and F is the Beaufort force:
 
-         °C 24 7D F
-    HOME 14 .0 .2 3
-    FAGWR12 2. 13 4
+          °C H 7D F
+    HOME  14 0 .2 2
+    FAGWR 12 2 13 2
 
 Set the two places in config.json. Preview locally with:
 
@@ -324,6 +325,8 @@ def current_conditions(lat: float, lon: float) -> tuple[float | None, float | No
 def format_mm(value: float | None, width: int) -> str:
     if value is None:
         return "?".rjust(width)
+    if width == 1:
+        return f"{value:.0f}"
     if width == 2 and value < 0.95:
         text = f".{min(9, int(round(value * 10)))}"
     elif width >= 4 and value < 99.95:
@@ -356,14 +359,23 @@ def location_line(
     mm_7d: float | None,
     force: int | None,
 ) -> str:
-    # name(5) temp(2) space rain24(2) space rain7(2) space force(1)
-    # Force 10-12 uses the space before it so the line stays 15 characters.
+    # Columns: name(5), gap, temp(2), gap, 24h rain, gap, 7d rain(2), gap, force.
+    # A 24-hour total of 10 mm or more, or force 10+, uses the gap before that number.
+    chars = [" "] * COLS
+    chars[0:5] = list(f"{name[:NAME_WIDTH]:<{NAME_WIDTH}}")
+    chars[6:8] = list(format_temp(temp))
+    rain24 = format_mm(mm_24h, 1)
+    if len(rain24) == 1:
+        chars[9] = rain24
+    else:
+        chars[8:10] = list(rain24[-2:])
+    chars[11:13] = list(format_mm(mm_7d, 2))
     force_text = format_force(force)
-    line = (
-        f"{name[:NAME_WIDTH]:<{NAME_WIDTH}}{format_temp(temp)} "
-        f"{format_mm(mm_24h, 2)} {format_mm(mm_7d, 2)} "
-    )
-    line = (line[:-1] + force_text) if len(force_text) > 1 else (line + force_text)
+    if len(force_text) == 1:
+        chars[14] = force_text
+    else:
+        chars[13:15] = list(force_text[-2:])
+    line = "".join(chars)
     if len(line) != COLS:
         raise RuntimeError(f"line is {len(line)} chars, expected {COLS}: {line!r}")
     return line
@@ -371,8 +383,8 @@ def location_line(
 
 def header_line() -> str:
     chars = [" "] * COLS
-    chars[5:7] = list("°C")
-    chars[8:10] = list("24")
+    chars[6:8] = list("°C")
+    chars[9] = "H"
     chars[11:13] = list("7D")
     chars[14] = "F"
     return "".join(chars)
