@@ -9,12 +9,12 @@ Both are 15-minute totals in millimetres, summed for the last 24 hours and 7 day
 This uses Environment Agency rainfall data from the real-time data API (Beta).
 Contains Natural Resources Wales information © Natural Resources Wales and Database Right.
 
-The Note is 3 rows by 15 columns. 24 is the last 24 hours of rain,
-7D is the last 7 days, and F is the Beaufort force:
+The Note is 3 rows by 15 columns. 24 is the last 24 hours of rain in
+millimetres, 7D is the last 7 days in centimetres, and F is the Beaufort force:
 
          °C 24 7D F
-    COPS 14 .0 .2 2
-    FAGW 12  2 13 2
+    COPS 14 .0 .0 2
+    FAGW 12  2  1 2
 
 Set the two places in config.json. Preview locally with:
 
@@ -365,7 +365,8 @@ def location_line(
     chars[0:4] = list(f"{name[:NAME_WIDTH]:<{NAME_WIDTH}}")
     chars[5:7] = list(format_temp(temp))
     chars[8:10] = list(format_mm(mm_24h, 2))
-    chars[11:13] = list(format_mm(mm_7d, 2))
+    cm_7d = None if mm_7d is None else mm_7d / 10
+    chars[11:13] = list(format_mm(cm_7d, 2))
     force_text = format_force(force)
     if len(force_text) == 1:
         chars[14] = force_text
@@ -509,7 +510,7 @@ def print_report(rows: list[dict], lines: list[str]) -> None:
             f"({station['reference']}, {station['grid'] or 'no grid'})"
         )
         mm_24 = "n/a" if rain["mm_24h"] is None else f"{rain['mm_24h']:.1f} mm"
-        mm_7 = "n/a" if rain["mm_7d"] is None else f"{rain['mm_7d']:.1f} mm"
+        mm_7 = "n/a" if rain["mm_7d"] is None else f"{rain['mm_7d'] / 10:.2f} cm"
         print(
             f"  24h {mm_24} from {rain['readings_24h']} readings, "
             f"7d {mm_7} from {rain['readings']} readings, latest {latest}"
