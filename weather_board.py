@@ -9,10 +9,11 @@ Both are 15-minute totals in millimetres, summed for the last 24 hours and 7 day
 This uses Environment Agency rainfall data from the real-time data API (Beta).
 Contains Natural Resources Wales information © Natural Resources Wales and Database Right.
 
-The Note is 3 rows by 15 columns. 24 is the last 24 hours of rain in
-millimetres, 7D is the last 7 days in centimetres, and F is the Beaufort force:
+The Note is 3 rows by 15 columns. The clock is UK time, 12-hour, on the
+half hour. 24 is the last 24 hours of rain in millimetres, 7D is the last
+7 days in centimetres, and F is the Beaufort force:
 
-         °C 24 7D F
+    4:30 °C 24 7D F
     COPS 14 .0 .0 2
     FAGW 12  2  1 2
 
@@ -36,6 +37,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 ROWS = 3
@@ -44,6 +46,7 @@ EA_ROOT = "https://environment.data.gov.uk/flood-monitoring"
 NRW_ROOT = "https://rivers-and-seas.naturalresources.wales"
 USER_AGENT = "vestaboard-weather/0.1"
 NAME_WIDTH = 4
+LONDON = ZoneInfo("Europe/London")
 
 # Vestaboard character codes. Gaps are colour tiles, which this layout does not use.
 CHAR_CODES = {
@@ -378,17 +381,32 @@ def location_line(
     return line
 
 
-def header_line() -> str:
+def clock_label(when: datetime) -> str:
+    """UK 12-hour label. A :29 run is 4:30, a :59 run is the next hour."""
+    local = when.astimezone(LONDON)
+    if local.minute < 30:
+        shown = local.replace(minute=30, second=0, microsecond=0)
+    else:
+        shown = (local + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    hour = shown.hour % 12 or 12
+    return f"{hour}:{shown.minute:02d}"
+
+
+def header_line(clock: str) -> str:
     chars = [" "] * COLS
+    chars[0 : len(clock)] = list(clock)
     chars[5:7] = list("°C")
     chars[8:10] = list("24")
     chars[11:13] = list("7D")
     chars[14] = "F"
-    return "".join(chars)
+    line = "".join(chars)
+    if len(line) != COLS:
+        raise RuntimeError(f"header is {len(line)} chars, expected {COLS}: {line!r}")
+    return line
 
 
-def board_lines(rows: list[dict]) -> list[str]:
-    lines = [header_line()]
+def board_lines(rows: list[dict], when: datetime) -> list[str]:
+    lines = [header_line(clock_label(when))]
     for row in rows:
         lines.append(
             location_line(row["name"], row["temp_c"], row["mm_24h"], row["mm_7d"], row["wind_force"])
@@ -525,7 +543,7 @@ def main() -> None:
 
     locations = load_config(args.config)
     rows = collect(locations)
-    lines = board_lines(rows)
+    lines = board_lines(rows, datetime.now(timezone.utc))
     grid = encode(lines)
     print_report(rows, lines)
 

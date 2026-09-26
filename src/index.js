@@ -1,4 +1,5 @@
-// Same Note layout as weather_board.py. Cloudflare runs this every hour.
+// Same Note layout as weather_board.py. Cloudflare runs this at :29 and :59.
+// The clock shows the half-hour those runs are aimed at, in UK 12-hour time.
 // 24-hour rain is millimetres. 7-day rain is centimetres. F is Beaufort force.
 
 const COLS = 15;
@@ -19,14 +20,14 @@ const CHAR_CODES = {
 };
 
 export default {
-  async scheduled(_event, env, ctx) {
-    ctx.waitUntil(sendBoard(env));
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(sendBoard(env, event.scheduledTime));
   },
 };
 
-async function sendBoard(env) {
+async function sendBoard(env, scheduledTime) {
   if (!env.VESTABOARD_TOKEN) throw new Error("VESTABOARD_TOKEN is not set");
-  const lines = await boardLines();
+  const lines = await boardLines(scheduledTime);
   const characters = lines.map((line) =>
     [...line].map((char) => CHAR_CODES[char] ?? CHAR_CODES[char.toUpperCase()] ?? 0),
   );
@@ -43,7 +44,7 @@ async function sendBoard(env) {
   }
 }
 
-async function boardLines() {
+async function boardLines(scheduledTime) {
   const now = Date.now();
   const rows = [];
   for (const location of LOCATIONS) {
@@ -54,7 +55,20 @@ async function boardLines() {
         : await eaRainfall(location.station, now);
     rows.push(locationLine(location.name, temp, rain.mm24, rain.mm7, beaufort(wind)));
   }
-  return [headerLine(), ...rows];
+  return [headerLine(clockLabel(scheduledTime)), ...rows];
+}
+
+function clockLabel(scheduledMs) {
+  const shown = new Date(scheduledMs + 60_000);
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    hour: "numeric",
+    minute: "2-digit",
+    hourCycle: "h12",
+  }).formatToParts(shown);
+  const hour = parts.find((part) => part.type === "hour").value.replace(/^0/, "");
+  const minute = parts.find((part) => part.type === "minute").value;
+  return `${hour}:${minute}`;
 }
 
 async function getJson(url) {
@@ -172,11 +186,14 @@ function locationLine(name, temp, mm24, mm7, force) {
   return line;
 }
 
-function headerLine() {
+function headerLine(clock) {
   const chars = Array(COLS).fill(" ");
+  chars.splice(0, clock.length, ...clock);
   chars.splice(5, 2, ..."°C");
   chars.splice(8, 2, ..."24");
   chars.splice(11, 2, ..."7D");
   chars[14] = "F";
-  return chars.join("");
+  const line = chars.join("");
+  if (line.length !== COLS) throw new Error(`header is ${line.length} chars: ${line}`);
+  return line;
 }
