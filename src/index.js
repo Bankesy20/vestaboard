@@ -1,9 +1,9 @@
 // Same Note layout as weather_board.py. Cloudflare runs this at :29 and :59.
 // :59 keeps the current reading, with the clock on the hour in UK 12-hour time.
-// Wind is an 8-point direction. N, E, S and W use the last column. NE, SE, SW and NW
-// also use the gap in front of it.
+// The wind column title is the COPS direction. Both rows show Beaufort force.
+// A two-letter direction uses the gap in front of that column.
 // :29 shows today's highest temperature and the next two days.
-// 24-hour rain is millimetres. 7-day rain is centimetres. F is Beaufort force.
+// 24-hour rain is millimetres. 7-day rain is centimetres.
 
 const COLS = 15;
 const EA_ROOT = "https://environment.data.gov.uk/flood-monitoring";
@@ -51,15 +51,17 @@ async function boardLines(scheduledTime) {
   if (new Date(scheduledTime).getUTCMinutes() < 30) return forecastLines();
   const now = Date.now();
   const rows = [];
+  let copsDirection = "?";
   for (const location of LOCATIONS) {
-    const [temp, wind] = await currentConditions(location.lat, location.lon);
+    const [temp, windMs, windDegrees] = await currentConditions(location.lat, location.lon);
+    if (location.name === "COPS") copsDirection = windDirection(windDegrees);
     const rain =
       location.source === "nrw"
         ? await nrwRainfall(location.station, now)
         : await eaRainfall(location.station, now);
-    rows.push(locationLine(location.name, temp, rain.mm24, rain.mm7, windDirection(wind)));
+    rows.push(locationLine(location.name, temp, rain.mm24, rain.mm7, beaufort(windMs)));
   }
-  return [headerLine(clockLabel(scheduledTime)), ...rows];
+  return [headerLine(clockLabel(scheduledTime), copsDirection), ...rows];
 }
 
 async function forecastLines() {
@@ -185,15 +187,22 @@ function sumReadings(readings, now) {
 async function currentConditions(lat, lon) {
   const url =
     "https://api.open-meteo.com/v1/forecast" +
-    `?latitude=${lat}&longitude=${lon}&current=temperature_2m,wind_direction_10m`;
+    `?latitude=${lat}&longitude=${lon}&current=temperature_2m,wind_speed_10m,wind_direction_10m&wind_speed_unit=ms`;
   const current = (await getJson(url)).current ?? {};
-  return [current.temperature_2m ?? null, current.wind_direction_10m ?? null];
+  return [current.temperature_2m ?? null, current.wind_speed_10m ?? null, current.wind_direction_10m ?? null];
 }
 
 function windDirection(degrees) {
   if (degrees == null) return "?";
   const names = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
   return names[Math.round(degrees / 45) % 8];
+}
+
+function beaufort(windMs) {
+  if (windMs == null) return null;
+  const limits = [0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9, 17.2, 20.8, 24.5, 28.5, 32.7];
+  const force = limits.findIndex((limit) => windMs < limit);
+  return force === -1 ? 12 : force;
 }
 
 function roundHalfEven(value) {
@@ -217,27 +226,28 @@ function formatTemp(value) {
   return String(roundHalfEven(value)).padStart(2).slice(-2);
 }
 
-function locationLine(name, temp, mm24, mm7, direction) {
+function locationLine(name, temp, mm24, mm7, force) {
   const chars = Array(COLS).fill(" ");
   chars.splice(0, 4, ...name.slice(0, 4).padEnd(4));
   chars.splice(5, 2, ...formatTemp(temp));
   chars.splice(8, 2, ...formatMm(mm24, 2));
   chars.splice(11, 2, ...formatMm(mm7 == null ? null : mm7 / 10, 2));
-  const windText = direction ?? "?";
-  if (windText.length === 1) chars[14] = windText;
-  else chars.splice(13, 2, ...windText.slice(-2));
+  const forceText = force == null ? "?" : String(Math.max(0, Math.min(12, force)));
+  if (forceText.length === 1) chars[14] = forceText;
+  else chars.splice(13, 2, ...forceText.slice(-2));
   const line = chars.join("");
   if (line.length !== COLS) throw new Error(`line is ${line.length} chars: ${line}`);
   return line;
 }
 
-function headerLine(clock) {
+function headerLine(clock, direction) {
   const chars = Array(COLS).fill(" ");
   chars.splice(0, clock.length, ...clock);
   chars.splice(5, 2, ..."°C");
   chars.splice(8, 2, ..."24");
   chars.splice(11, 2, ..."7D");
-  chars[14] = "D";
+  if (direction.length === 1) chars[14] = direction;
+  else chars.splice(13, 2, ...direction.slice(-2));
   const line = chars.join("");
   if (line.length !== COLS) throw new Error(`header is ${line.length} chars: ${line}`);
   return line;
