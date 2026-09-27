@@ -3,6 +3,7 @@
 // The wind column title is the COPS direction. Both rows show Beaufort force.
 // A two-letter direction uses the gap in front of that column.
 // :29 shows today's highest temperature and the next two days.
+// A colour tile follows each high: yellow when fair, white when cloudy, blue when wet.
 // 24-hour rain is millimetres. 7-day rain is centimetres.
 
 const COLS = 15;
@@ -21,6 +22,10 @@ const CHAR_CODES = {
   "-": 44, "+": 46, "&": 47, "=": 48, ";": 49, ":": 50, "'": 52, '"': 53,
   "%": 54, ",": 55, ".": 56, "/": 59, "?": 60, "°": 62,
 };
+const YELLOW = "\uE000";
+const WHITE = "\uE001";
+const BLUE = "\uE002";
+const TILE_CODES = { [YELLOW]: 65, [WHITE]: 69, [BLUE]: 67 };
 
 export default {
   async scheduled(event, env, ctx) {
@@ -32,7 +37,7 @@ async function sendBoard(env, scheduledTime) {
   if (!env.VESTABOARD_TOKEN) throw new Error("VESTABOARD_TOKEN is not set");
   const lines = await boardLines(scheduledTime);
   const characters = lines.map((line) =>
-    [...line].map((char) => CHAR_CODES[char] ?? CHAR_CODES[char.toUpperCase()] ?? 0),
+    [...line].map((char) => CHAR_CODES[char] ?? TILE_CODES[char] ?? CHAR_CODES[char.toUpperCase()] ?? 0),
   );
   const response = await fetch("https://cloud.vestaboard.com/", {
     method: "POST",
@@ -78,7 +83,10 @@ async function forecastLines() {
   for (const place of places) {
     const row = Array(COLS).fill(" ");
     row.splice(0, 4, ...place.name.slice(0, 4).padEnd(4));
-    place.days.forEach((day, index) => row.splice(5 + index * 3, 2, ...formatTemp(day.temp)));
+    place.days.forEach((day, index) => {
+      row.splice(5 + index * 3, 2, ...formatTemp(day.temp));
+      row[7 + index * 3] = day.tile;
+    });
     lines.push(row.join(""));
   }
   for (const line of lines) {
@@ -90,14 +98,25 @@ async function forecastLines() {
 async function dailyMaxes(lat, lon) {
   const url =
     "https://api.open-meteo.com/v1/forecast" +
-    `?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max&timezone=Europe%2FLondon&forecast_days=3`;
+    `?latitude=${lat}&longitude=${lon}` +
+    "&daily=temperature_2m_max,precipitation_sum,cloud_cover_mean&timezone=Europe%2FLondon&forecast_days=3";
   const daily = (await getJson(url)).daily ?? {};
   const times = daily.time ?? [];
   const temps = daily.temperature_2m_max ?? [];
+  const rain = daily.precipitation_sum ?? [];
+  const cloud = daily.cloud_cover_mean ?? [];
   return times.slice(0, 3).map((date, index) => ({
     label: weekdayLabel(date),
     temp: temps[index] ?? null,
+    tile: skyTile(rain[index], cloud[index]),
   }));
+}
+
+function skyTile(precipMm, cloudPercent) {
+  if (precipMm != null && precipMm >= 0.5) return BLUE;
+  if (cloudPercent != null && cloudPercent >= 60) return WHITE;
+  if (precipMm != null || cloudPercent != null) return YELLOW;
+  return " ";
 }
 
 function weekdayLabel(isoDate) {

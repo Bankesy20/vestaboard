@@ -14,15 +14,15 @@ The clock is UK time, 12-hour, on the hour. 24 is the last 24 hours of rain
 in millimetres, 7D is the last 7 days in centimetres. The wind column title
 is the COPS direction, and both rows show Beaufort force. A two-letter
 direction uses the gap in front of that column. The :29 run shows three
-daily highs, starting today:
+daily highs, starting today. A yellow, white, or blue tile follows each high:
 
     11:00°C 24 7D S
     COPS 16 .. .. 4
     FAGW 16 .. .. 5
 
          SU MO TU
-    COPS 17 17 22
-    FAGW 17 17 20
+    COPS 17Y17W22B
+    FAGW 17Y17W20B
 
 Set the two places in config.json. Preview locally with:
 
@@ -54,6 +54,10 @@ NRW_ROOT = "https://rivers-and-seas.naturalresources.wales"
 USER_AGENT = "vestaboard-weather/0.1"
 NAME_WIDTH = 4
 LONDON = ZoneInfo("Europe/London")
+YELLOW = "\uE000"
+WHITE = "\uE001"
+BLUE = "\uE002"
+TILE_CODES = {YELLOW: 65, WHITE: 69, BLUE: 67}
 
 # Vestaboard character codes. Gaps are colour tiles, which this layout does not use.
 CHAR_CODES = {
@@ -406,7 +410,7 @@ def daily_maxes(lat: float, lon: float) -> list[dict]:
         {
             "latitude": f"{lat:.5f}",
             "longitude": f"{lon:.5f}",
-            "daily": "temperature_2m_max",
+            "daily": "temperature_2m_max,precipitation_sum,cloud_cover_mean",
             "timezone": "Europe/London",
             "forecast_days": 3,
         }
@@ -414,10 +418,30 @@ def daily_maxes(lat: float, lon: float) -> list[dict]:
     daily = get_json(f"https://api.open-meteo.com/v1/forecast?{query}").get("daily") or {}
     times = daily.get("time") or []
     temps = daily.get("temperature_2m_max") or []
+    rain = daily.get("precipitation_sum") or []
+    cloud = daily.get("cloud_cover_mean") or []
     return [
-        {"label": weekday_label(times[index]), "temp": None if temps[index] is None else float(temps[index])}
+        {
+            "label": weekday_label(times[index]),
+            "temp": None if temps[index] is None else float(temps[index]),
+            "tile": sky_tile(
+                None if index >= len(rain) or rain[index] is None else float(rain[index]),
+                None if index >= len(cloud) or cloud[index] is None else float(cloud[index]),
+            ),
+        }
         for index in range(min(3, len(times)))
     ]
+
+
+def sky_tile(precip_mm: float | None, cloud_percent: float | None) -> str:
+    """Yellow when fair, white when cloudy, blue when the day has at least 0.5 mm of rain."""
+    if precip_mm is not None and precip_mm >= 0.5:
+        return BLUE
+    if cloud_percent is not None and cloud_percent >= 60:
+        return WHITE
+    if precip_mm is not None or cloud_percent is not None:
+        return YELLOW
+    return " "
 
 
 def forecast_lines(places: list[dict]) -> list[str]:
@@ -431,6 +455,7 @@ def forecast_lines(places: list[dict]) -> list[str]:
         row[0:4] = list(f"{place['name'][:NAME_WIDTH]:<{NAME_WIDTH}}")
         for index, day in enumerate(place["days"]):
             row[5 + index * 3 : 7 + index * 3] = list(format_temp(day["temp"]))
+            row[7 + index * 3] = day["tile"]
         line = "".join(row)
         if len(line) != COLS:
             raise RuntimeError(f"line is {len(line)} chars, expected {COLS}: {line!r}")
@@ -486,7 +511,7 @@ def encode(lines: list[str]) -> list[list[int]]:
     for line in lines:
         row = []
         for char in line:
-            row.append(CHAR_CODES.get(char, CHAR_CODES.get(char.upper(), 0)))
+            row.append(TILE_CODES.get(char, CHAR_CODES.get(char, CHAR_CODES.get(char.upper(), 0))))
         if len(row) != COLS:
             raise RuntimeError(f"encoded row has {len(row)} columns")
         grid.append(row)
@@ -573,7 +598,7 @@ def send(grid: list[list[int]], token: str) -> dict:
 def print_report(rows: list[dict], lines: list[str]) -> None:
     print("+" + "-" * COLS + "+")
     for line in lines:
-        print("|" + line + "|")
+        print("|" + line.replace(YELLOW, "Y").replace(WHITE, "W").replace(BLUE, "B") + "|")
     print("+" + "-" * COLS + "+")
     print()
     for row in rows:
