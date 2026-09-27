@@ -9,13 +9,18 @@ Both are 15-minute totals in millimetres, summed for the last 24 hours and 7 day
 This uses Environment Agency rainfall data from the real-time data API (Beta).
 Contains Natural Resources Wales information © Natural Resources Wales and Database Right.
 
-The Note is 3 rows by 15 columns. The clock is UK time, 12-hour, on the
-half hour. 24 is the last 24 hours of rain in millimetres, 7D is the last
-7 days in centimetres, and F is the Beaufort force:
+The Note is 3 rows by 15 columns. The :59 run keeps the current reading.
+The clock is UK time, 12-hour, on the hour. 24 is the last 24 hours of rain
+in millimetres, 7D is the last 7 days in centimetres, and F is Beaufort force.
+The :29 run shows today's highest temperature and the next three days:
 
-    4:30 °C 24 7D F
+    9:00 °C 24 7D F
     COPS 14 .0 .0 2
     FAGW 12  2  1 2
+
+        SU MO TU WE
+    COPS16 15 14 13
+    FAGW14 13 12 12
 
 Set the two places in config.json. Preview locally with:
 
@@ -381,6 +386,55 @@ def location_line(
     return line
 
 
+def forecast_run(when: datetime) -> bool:
+    """The :29 job shows the daily highs. The :59 job shows the current reading."""
+    return when.astimezone(LONDON).minute < 30
+
+
+def weekday_label(iso_date: str) -> str:
+    year, month, day = (int(part) for part in iso_date.split("-"))
+    return ("MO", "TU", "WE", "TH", "FR", "SA", "SU")[datetime(year, month, day).weekday()]
+
+
+def daily_maxes(lat: float, lon: float) -> list[dict]:
+    query = urllib.parse.urlencode(
+        {
+            "latitude": f"{lat:.5f}",
+            "longitude": f"{lon:.5f}",
+            "daily": "temperature_2m_max",
+            "timezone": "Europe/London",
+            "forecast_days": 4,
+        }
+    )
+    daily = get_json(f"https://api.open-meteo.com/v1/forecast?{query}").get("daily") or {}
+    times = daily.get("time") or []
+    temps = daily.get("temperature_2m_max") or []
+    return [
+        {"label": weekday_label(times[index]), "temp": None if temps[index] is None else float(temps[index])}
+        for index in range(min(4, len(times)))
+    ]
+
+
+def forecast_lines(places: list[dict]) -> list[str]:
+    days = places[0]["days"]
+    header = [" "] * COLS
+    for index, day in enumerate(days):
+        header[4 + index * 3 : 6 + index * 3] = list(day["label"])
+    lines = ["".join(header)]
+    for place in places:
+        row = [" "] * COLS
+        row[0:4] = list(f"{place['name'][:NAME_WIDTH]:<{NAME_WIDTH}}")
+        for index, day in enumerate(place["days"]):
+            row[4 + index * 3 : 6 + index * 3] = list(format_temp(day["temp"]))
+        line = "".join(row)
+        if len(line) != COLS:
+            raise RuntimeError(f"line is {len(line)} chars, expected {COLS}: {line!r}")
+        lines.append(line)
+    if len(lines) != ROWS:
+        raise RuntimeError(f"expected {ROWS} lines, got {len(lines)}")
+    return lines
+
+
 def clock_label(when: datetime) -> str:
     """UK 12-hour label. A :29 run is 4:30, a :59 run is the next hour."""
     local = when.astimezone(LONDON)
@@ -405,7 +459,9 @@ def header_line(clock: str) -> str:
     return line
 
 
-def board_lines(rows: list[dict], when: datetime) -> list[str]:
+def board_lines(rows: list[dict], when: datetime, forecasts: list[dict] | None = None) -> list[str]:
+    if forecast_run(when):
+        return forecast_lines(forecasts or [])
     lines = [header_line(clock_label(when))]
     for row in rows:
         lines.append(
@@ -542,10 +598,19 @@ def main() -> None:
     args = parser.parse_args()
 
     locations = load_config(args.config)
-    rows = collect(locations)
-    lines = board_lines(rows, datetime.now(timezone.utc))
+    now = datetime.now(timezone.utc)
+    if forecast_run(now):
+        forecasts = [
+            {"name": location["name"], "days": daily_maxes(location["lat"], location["lon"])}
+            for location in locations
+        ]
+        lines = board_lines([], now, forecasts)
+        print_report([], lines)
+    else:
+        rows = collect(locations)
+        lines = board_lines(rows, now)
+        print_report(rows, lines)
     grid = encode(lines)
-    print_report(rows, lines)
 
     if not args.send:
         print("\nPreview only. Re-run with --send and VESTABOARD_TOKEN to update the Note.")

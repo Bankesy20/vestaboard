@@ -1,5 +1,6 @@
 // Same Note layout as weather_board.py. Cloudflare runs this at :29 and :59.
-// The clock shows the half-hour those runs are aimed at, in UK 12-hour time.
+// :59 keeps the current reading, with the clock on the hour in UK 12-hour time.
+// :29 shows today and the next three days' highest temperatures.
 // 24-hour rain is millimetres. 7-day rain is centimetres. F is Beaufort force.
 
 const COLS = 15;
@@ -45,6 +46,7 @@ async function sendBoard(env, scheduledTime) {
 }
 
 async function boardLines(scheduledTime) {
+  if (new Date(scheduledTime).getUTCMinutes() < 30) return forecastLines();
   const now = Date.now();
   const rows = [];
   for (const location of LOCATIONS) {
@@ -56,6 +58,48 @@ async function boardLines(scheduledTime) {
     rows.push(locationLine(location.name, temp, rain.mm24, rain.mm7, beaufort(wind)));
   }
   return [headerLine(clockLabel(scheduledTime)), ...rows];
+}
+
+async function forecastLines() {
+  const places = await Promise.all(
+    LOCATIONS.map(async (location) => ({
+      name: location.name,
+      days: await dailyMaxes(location.lat, location.lon),
+    })),
+  );
+  const days = places[0].days;
+  const header = Array(COLS).fill(" ");
+  days.forEach((day, index) => header.splice(4 + index * 3, 2, ...day.label));
+  const lines = [header.join("")];
+  for (const place of places) {
+    const row = Array(COLS).fill(" ");
+    row.splice(0, 4, ...place.name.slice(0, 4).padEnd(4));
+    place.days.forEach((day, index) => row.splice(4 + index * 3, 2, ...formatTemp(day.temp)));
+    lines.push(row.join(""));
+  }
+  for (const line of lines) {
+    if (line.length !== COLS) throw new Error(`line is ${line.length} chars: ${line}`);
+  }
+  return lines;
+}
+
+async function dailyMaxes(lat, lon) {
+  const url =
+    "https://api.open-meteo.com/v1/forecast" +
+    `?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max&timezone=Europe%2FLondon&forecast_days=4`;
+  const daily = (await getJson(url)).daily ?? {};
+  const times = daily.time ?? [];
+  const temps = daily.temperature_2m_max ?? [];
+  return times.slice(0, 4).map((date, index) => ({
+    label: weekdayLabel(date),
+    temp: temps[index] ?? null,
+  }));
+}
+
+function weekdayLabel(isoDate) {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  return ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][weekday];
 }
 
 function clockLabel(scheduledMs) {
