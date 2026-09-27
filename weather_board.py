@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Show current temperature, rainfall, and wind force on a Vestaboard Note.
+"""Show current temperature, rainfall, and wind direction on a Vestaboard Note.
 
-Temperature and Beaufort wind force come from Open-Meteo. Rainfall for Bisley
+Temperature and wind direction come from Open-Meteo. Rainfall for Bisley
 (COPS) is the Miserden Environment Agency gauge. Rainfall for Dinas Cross
 (FAGW) is the Maenclochog gauge from Natural Resources Wales rivers-and-seas.
 Both are 15-minute totals in millimetres, summed for the last 24 hours and 7 days.
@@ -11,16 +11,17 @@ Contains Natural Resources Wales information © Natural Resources Wales and Data
 
 The Note is 3 rows by 15 columns. The :59 run keeps the current reading.
 The clock is UK time, 12-hour, on the hour. 24 is the last 24 hours of rain
-in millimetres, 7D is the last 7 days in centimetres, and F is Beaufort force.
-The :29 run shows today's highest temperature and the next three days:
+in millimetres, 7D is the last 7 days in centimetres, and D is the wind
+direction. N, E, S and W use the last column. NE, SE, SW and NW also use
+the gap in front of it. The :29 run shows three daily highs, starting today:
 
-    9:00 °C 24 7D F
-    COPS 14 .0 .0 2
-    FAGW 12  2  1 2
+    9:00 °C 24 7D D
+    COPS 14 .0 .0 SW
+    FAGW 12  2  1  S
 
-        SU MO TU WE
-    COPS16 15 14 13
-    FAGW14 13 12 12
+         SU MO TU
+    COPS 17 17 22
+    FAGW 17 17 20
 
 Set the two places in config.json. Preview locally with:
 
@@ -303,31 +304,27 @@ def nrw_rainfall(station_name: str, label: str, now: datetime) -> tuple[dict, di
     return station, sum_readings(readings, now)
 
 
-def beaufort(wind_ms: float | None) -> int | None:
-    """World Meteorological Organization Beaufort force from a 10 m wind speed."""
-    if wind_ms is None:
-        return None
-    limits = (0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9, 17.2, 20.8, 24.5, 28.5, 32.7)
-    for force, limit in enumerate(limits):
-        if wind_ms < limit:
-            return force
-    return 12
-
-
 def current_conditions(lat: float, lon: float) -> tuple[float | None, float | None]:
     query = urllib.parse.urlencode(
         {
             "latitude": f"{lat:.5f}",
             "longitude": f"{lon:.5f}",
-            "current": "temperature_2m,wind_speed_10m",
-            "wind_speed_unit": "ms",
+            "current": "temperature_2m,wind_direction_10m",
         }
     )
     payload = get_json(f"https://api.open-meteo.com/v1/forecast?{query}")
     current = payload.get("current") or {}
     temp = float(current["temperature_2m"]) if "temperature_2m" in current else None
-    wind = float(current["wind_speed_10m"]) if "wind_speed_10m" in current else None
-    return temp, wind
+    direction = float(current["wind_direction_10m"]) if "wind_direction_10m" in current else None
+    return temp, direction
+
+
+def wind_direction(degrees: float | None) -> str:
+    """8-point compass. Degrees are the direction the wind is coming from."""
+    if degrees is None:
+        return "?"
+    names = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+    return names[round(degrees / 45) % 8]
 
 
 def format_mm(value: float | None, width: int) -> str:
@@ -354,32 +351,25 @@ def format_temp(value: float | None) -> str:
     return f"{int(round(value)):>2}"[-2:]
 
 
-def format_force(force: int | None) -> str:
-    if force is None:
-        return "?"
-    return str(max(0, min(12, force)))
-
-
 def location_line(
     name: str,
     temp: float | None,
     mm_24h: float | None,
     mm_7d: float | None,
-    force: int | None,
+    direction: str,
 ) -> str:
-    # Columns: name(4), gap, temp(2), gap, 24h rain(2), gap, 7d rain(2), gap, force.
-    # Force 10+ uses the gap before it.
+    # Columns: name(4), gap, temp(2), gap, 24h rain(2), gap, 7d rain(2), direction.
+    # N/E/S/W use the last column. Two-letter directions also use the gap before it.
     chars = [" "] * COLS
     chars[0:4] = list(f"{name[:NAME_WIDTH]:<{NAME_WIDTH}}")
     chars[5:7] = list(format_temp(temp))
     chars[8:10] = list(format_mm(mm_24h, 2))
     cm_7d = None if mm_7d is None else mm_7d / 10
     chars[11:13] = list(format_mm(cm_7d, 2))
-    force_text = format_force(force)
-    if len(force_text) == 1:
-        chars[14] = force_text
+    if len(direction) == 1:
+        chars[14] = direction
     else:
-        chars[13:15] = list(force_text[-2:])
+        chars[13:15] = list(direction[-2:])
     line = "".join(chars)
     if len(line) != COLS:
         raise RuntimeError(f"line is {len(line)} chars, expected {COLS}: {line!r}")
@@ -403,7 +393,7 @@ def daily_maxes(lat: float, lon: float) -> list[dict]:
             "longitude": f"{lon:.5f}",
             "daily": "temperature_2m_max",
             "timezone": "Europe/London",
-            "forecast_days": 4,
+            "forecast_days": 3,
         }
     )
     daily = get_json(f"https://api.open-meteo.com/v1/forecast?{query}").get("daily") or {}
@@ -411,7 +401,7 @@ def daily_maxes(lat: float, lon: float) -> list[dict]:
     temps = daily.get("temperature_2m_max") or []
     return [
         {"label": weekday_label(times[index]), "temp": None if temps[index] is None else float(temps[index])}
-        for index in range(min(4, len(times)))
+        for index in range(min(3, len(times)))
     ]
 
 
@@ -419,13 +409,13 @@ def forecast_lines(places: list[dict]) -> list[str]:
     days = places[0]["days"]
     header = [" "] * COLS
     for index, day in enumerate(days):
-        header[4 + index * 3 : 6 + index * 3] = list(day["label"])
+        header[5 + index * 3 : 7 + index * 3] = list(day["label"])
     lines = ["".join(header)]
     for place in places:
         row = [" "] * COLS
         row[0:4] = list(f"{place['name'][:NAME_WIDTH]:<{NAME_WIDTH}}")
         for index, day in enumerate(place["days"]):
-            row[4 + index * 3 : 6 + index * 3] = list(format_temp(day["temp"]))
+            row[5 + index * 3 : 7 + index * 3] = list(format_temp(day["temp"]))
         line = "".join(row)
         if len(line) != COLS:
             raise RuntimeError(f"line is {len(line)} chars, expected {COLS}: {line!r}")
@@ -452,7 +442,7 @@ def header_line(clock: str) -> str:
     chars[5:7] = list("°C")
     chars[8:10] = list("24")
     chars[11:13] = list("7D")
-    chars[14] = "F"
+    chars[14] = "D"
     line = "".join(chars)
     if len(line) != COLS:
         raise RuntimeError(f"header is {len(line)} chars, expected {COLS}: {line!r}")
@@ -465,7 +455,7 @@ def board_lines(rows: list[dict], when: datetime, forecasts: list[dict] | None =
     lines = [header_line(clock_label(when))]
     for row in rows:
         lines.append(
-            location_line(row["name"], row["temp_c"], row["mm_24h"], row["mm_7d"], row["wind_force"])
+            location_line(row["name"], row["temp_c"], row["mm_24h"], row["mm_7d"], row["wind_direction"])
         )
     if len(lines) != ROWS:
         raise RuntimeError(f"expected {ROWS} lines, got {len(lines)}")
@@ -488,7 +478,7 @@ def collect(locations: list[dict]) -> list[dict]:
     now = datetime.now(timezone.utc)
     rows = []
     for location in locations:
-        temp, wind_ms = current_conditions(location["lat"], location["lon"])
+        temp, wind_degrees = current_conditions(location["lat"], location["lon"])
         rain = None
         station = None
         spec = location["rainfall"]
@@ -530,8 +520,7 @@ def collect(locations: list[dict]) -> list[dict]:
                 "lat": location["lat"],
                 "lon": location["lon"],
                 "temp_c": temp,
-                "wind_ms": wind_ms,
-                "wind_force": beaufort(wind_ms),
+                "wind_direction": wind_direction(wind_degrees),
                 "mm_24h": rain["mm_24h"],
                 "mm_7d": rain["mm_7d"],
                 "station": station,
@@ -577,7 +566,7 @@ def print_report(rows: list[dict], lines: list[str]) -> None:
         if row["temp_c"] is None:
             print(f"{row['name'].strip()}: temperature unavailable")
         else:
-            wind = "wind n/a" if row["wind_force"] is None else f"force {row['wind_force']}"
+            wind = "wind n/a" if row["wind_direction"] == "?" else row["wind_direction"]
             print(f"{row['name'].strip()}: {row['temp_c']:.1f}°C, {wind}")
         print(
             f"  {station['source']} {station['label']} "

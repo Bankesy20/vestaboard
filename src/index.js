@@ -1,6 +1,8 @@
 // Same Note layout as weather_board.py. Cloudflare runs this at :29 and :59.
 // :59 keeps the current reading, with the clock on the hour in UK 12-hour time.
-// :29 shows today and the next three days' highest temperatures.
+// Wind is an 8-point direction. N, E, S and W use the last column. NE, SE, SW and NW
+// also use the gap in front of it.
+// :29 shows today's highest temperature and the next two days.
 // 24-hour rain is millimetres. 7-day rain is centimetres. F is Beaufort force.
 
 const COLS = 15;
@@ -55,7 +57,7 @@ async function boardLines(scheduledTime) {
       location.source === "nrw"
         ? await nrwRainfall(location.station, now)
         : await eaRainfall(location.station, now);
-    rows.push(locationLine(location.name, temp, rain.mm24, rain.mm7, beaufort(wind)));
+    rows.push(locationLine(location.name, temp, rain.mm24, rain.mm7, windDirection(wind)));
   }
   return [headerLine(clockLabel(scheduledTime)), ...rows];
 }
@@ -69,12 +71,12 @@ async function forecastLines() {
   );
   const days = places[0].days;
   const header = Array(COLS).fill(" ");
-  days.forEach((day, index) => header.splice(4 + index * 3, 2, ...day.label));
+  days.forEach((day, index) => header.splice(5 + index * 3, 2, ...day.label));
   const lines = [header.join("")];
   for (const place of places) {
     const row = Array(COLS).fill(" ");
     row.splice(0, 4, ...place.name.slice(0, 4).padEnd(4));
-    place.days.forEach((day, index) => row.splice(4 + index * 3, 2, ...formatTemp(day.temp)));
+    place.days.forEach((day, index) => row.splice(5 + index * 3, 2, ...formatTemp(day.temp)));
     lines.push(row.join(""));
   }
   for (const line of lines) {
@@ -86,11 +88,11 @@ async function forecastLines() {
 async function dailyMaxes(lat, lon) {
   const url =
     "https://api.open-meteo.com/v1/forecast" +
-    `?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max&timezone=Europe%2FLondon&forecast_days=4`;
+    `?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max&timezone=Europe%2FLondon&forecast_days=3`;
   const daily = (await getJson(url)).daily ?? {};
   const times = daily.time ?? [];
   const temps = daily.temperature_2m_max ?? [];
-  return times.slice(0, 4).map((date, index) => ({
+  return times.slice(0, 3).map((date, index) => ({
     label: weekdayLabel(date),
     temp: temps[index] ?? null,
   }));
@@ -183,16 +185,15 @@ function sumReadings(readings, now) {
 async function currentConditions(lat, lon) {
   const url =
     "https://api.open-meteo.com/v1/forecast" +
-    `?latitude=${lat}&longitude=${lon}&current=temperature_2m,wind_speed_10m&wind_speed_unit=ms`;
+    `?latitude=${lat}&longitude=${lon}&current=temperature_2m,wind_direction_10m`;
   const current = (await getJson(url)).current ?? {};
-  return [current.temperature_2m ?? null, current.wind_speed_10m ?? null];
+  return [current.temperature_2m ?? null, current.wind_direction_10m ?? null];
 }
 
-function beaufort(windMs) {
-  if (windMs == null) return null;
-  const limits = [0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9, 17.2, 20.8, 24.5, 28.5, 32.7];
-  const force = limits.findIndex((limit) => windMs < limit);
-  return force === -1 ? 12 : force;
+function windDirection(degrees) {
+  if (degrees == null) return "?";
+  const names = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  return names[Math.round(degrees / 45) % 8];
 }
 
 function roundHalfEven(value) {
@@ -216,15 +217,15 @@ function formatTemp(value) {
   return String(roundHalfEven(value)).padStart(2).slice(-2);
 }
 
-function locationLine(name, temp, mm24, mm7, force) {
+function locationLine(name, temp, mm24, mm7, direction) {
   const chars = Array(COLS).fill(" ");
   chars.splice(0, 4, ...name.slice(0, 4).padEnd(4));
   chars.splice(5, 2, ...formatTemp(temp));
   chars.splice(8, 2, ...formatMm(mm24, 2));
   chars.splice(11, 2, ...formatMm(mm7 == null ? null : mm7 / 10, 2));
-  const forceText = force == null ? "?" : String(Math.max(0, Math.min(12, force)));
-  if (forceText.length === 1) chars[14] = forceText;
-  else chars.splice(13, 2, ...forceText.slice(-2));
+  const windText = direction ?? "?";
+  if (windText.length === 1) chars[14] = windText;
+  else chars.splice(13, 2, ...windText.slice(-2));
   const line = chars.join("");
   if (line.length !== COLS) throw new Error(`line is ${line.length} chars: ${line}`);
   return line;
@@ -236,7 +237,7 @@ function headerLine(clock) {
   chars.splice(5, 2, ..."°C");
   chars.splice(8, 2, ..."24");
   chars.splice(11, 2, ..."7D");
-  chars[14] = "F";
+  chars[14] = "D";
   const line = chars.join("");
   if (line.length !== COLS) throw new Error(`header is ${line.length} chars: ${line}`);
   return line;
