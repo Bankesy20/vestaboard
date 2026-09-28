@@ -2,8 +2,8 @@
 // :59 keeps the current reading, with the clock on the hour in UK 12-hour time.
 // The wind column title is the COPS direction. Both rows show Beaufort force.
 // A two-letter direction uses the gap in front of that column.
-// :29 shows today's highest temperature and the next two days.
-// A colour tile follows each high: yellow when fair, white when cloudy, blue when wet.
+// :29 shows three daytime highs. From 1:30pm the first day is tomorrow.
+// Colour follows the Met Office day, 9am to 9pm: blue if it rains, white if cloudy, yellow otherwise.
 // 24-hour rain is millimetres. 7-day rain is millimetres until 100 mm, then centimetres.
 
 const COLS = 15;
@@ -53,7 +53,7 @@ async function sendBoard(env, scheduledTime) {
 }
 
 async function boardLines(scheduledTime) {
-  if (new Date(scheduledTime).getUTCMinutes() < 30) return forecastLines();
+  if (new Date(scheduledTime).getUTCMinutes() < 30) return forecastLines(scheduledTime);
   const now = Date.now();
   const rows = [];
   let copsDirection = "?";
@@ -69,11 +69,13 @@ async function boardLines(scheduledTime) {
   return [headerLine(clockLabel(scheduledTime), copsDirection), ...rows];
 }
 
-async function forecastLines() {
+async function forecastLines(scheduledTime) {
+  const shown = londonParts(new Date(scheduledTime + 60_000));
+  const startOffset = shown.hour >= 13 ? 1 : 0;
   const places = await Promise.all(
     LOCATIONS.map(async (location) => ({
       name: location.name,
-      days: await dailyMaxes(location.lat, location.lon),
+      days: await dailyMaxes(location.lat, location.lon, startOffset, shown.hour),
     })),
   );
   const days = places[0].days;
@@ -95,28 +97,59 @@ async function forecastLines() {
   return lines;
 }
 
-async function dailyMaxes(lat, lon) {
+async function dailyMaxes(lat, lon, startOffset, fromHour) {
   const url =
     "https://api.open-meteo.com/v1/forecast" +
     `?latitude=${lat}&longitude=${lon}` +
-    "&daily=temperature_2m_max,precipitation_sum,cloud_cover_mean&timezone=Europe%2FLondon&forecast_days=3";
-  const daily = (await getJson(url)).daily ?? {};
+    "&daily=temperature_2m_max&hourly=precipitation,cloud_cover,weather_code" +
+    "&timezone=Europe%2FLondon&forecast_days=4";
+  const payload = await getJson(url);
+  const daily = payload.daily ?? {};
+  const hourly = payload.hourly ?? {};
   const times = daily.time ?? [];
   const temps = daily.temperature_2m_max ?? [];
-  const rain = daily.precipitation_sum ?? [];
-  const cloud = daily.cloud_cover_mean ?? [];
-  return times.slice(0, 3).map((date, index) => ({
+  return times.slice(startOffset, startOffset + 3).map((date, index) => ({
     label: weekdayLabel(date),
-    temp: temps[index] ?? null,
-    tile: skyTile(rain[index], cloud[index]),
+    temp: temps[startOffset + index] ?? null,
+    tile: skyTile(hourly, date, index === 0 && startOffset === 0 ? fromHour : 9),
   }));
 }
 
-function skyTile(precipMm, cloudPercent) {
-  if (precipMm != null && precipMm >= 0.5) return BLUE;
-  if (cloudPercent != null && cloudPercent >= 60) return WHITE;
-  if (precipMm != null || cloudPercent != null) return YELLOW;
-  return " ";
+function skyTile(hourly, date, fromHour) {
+  const wet = new Set([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 71, 73, 75, 77, 80, 81, 82, 85, 86, 95, 96, 99]);
+  const start = Math.max(9, fromHour);
+  const points = [];
+  const times = hourly.time ?? [];
+  for (let index = 0; index < times.length; index++) {
+    const [day, clock] = times[index].split("T");
+    if (day !== date) continue;
+    const hour = Number(clock.slice(0, 2));
+    if (hour < start || hour >= 21) continue;
+    points.push({
+      precip: hourly.precipitation?.[index],
+      cloud: hourly.cloud_cover?.[index],
+      code: hourly.weather_code?.[index],
+    });
+  }
+  if (!points.length) return " ";
+  const rainy = points.some((point) => (point.code != null && wet.has(point.code)) || (point.precip != null && point.precip > 0));
+  if (rainy) return BLUE;
+  const clouds = points.map((point) => point.cloud).filter((cloud) => cloud != null);
+  if (clouds.length && clouds.reduce((sum, cloud) => sum + cloud, 0) / clouds.length >= 75) return WHITE;
+  return YELLOW;
+}
+
+function londonParts(date) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "numeric",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const value = (type) => parts.find((part) => part.type === type).value;
+  return { hour: Number(value("hour")) };
 }
 
 function weekdayLabel(isoDate) {

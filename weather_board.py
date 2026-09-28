@@ -13,8 +13,8 @@ The Note is 3 rows by 15 columns. The :59 run keeps the current reading.
 The clock is UK time, 12-hour, on the hour. 24 is the last 24 hours of rain
 in millimetres, 7D is the last 7 days in millimetres, or centimetres once it reaches 100 mm. The wind column title
 is the COPS direction, and both rows show Beaufort force. A two-letter
-direction uses the gap in front of that column. The :29 run shows three
-daily highs, starting today. A yellow, white, or blue tile follows each high:
+direction uses the gap in front of that column. The :29 run shows three daytime highs.
+From 1:30pm the first day is tomorrow. The colour is the Met Office day, 9am to 9pm:
 
     11:00°C 24 7D S
     COPS 16 .. .. 4
@@ -413,43 +413,60 @@ def weekday_label(iso_date: str) -> str:
     return ("MO", "TU", "WE", "TH", "FR", "SA", "SU")[datetime(year, month, day).weekday()]
 
 
-def daily_maxes(lat: float, lon: float) -> list[dict]:
+def daily_maxes(lat: float, lon: float, when: datetime) -> list[dict]:
+    shown = (when + timedelta(minutes=1)).astimezone(LONDON)
+    start_offset = 1 if shown.hour >= 13 else 0
     query = urllib.parse.urlencode(
         {
             "latitude": f"{lat:.5f}",
             "longitude": f"{lon:.5f}",
-            "daily": "temperature_2m_max,precipitation_sum,cloud_cover_mean",
+            "daily": "temperature_2m_max",
+            "hourly": "precipitation,cloud_cover,weather_code",
             "timezone": "Europe/London",
-            "forecast_days": 3,
+            "forecast_days": 4,
         }
     )
-    daily = get_json(f"https://api.open-meteo.com/v1/forecast?{query}").get("daily") or {}
+    payload = get_json(f"https://api.open-meteo.com/v1/forecast?{query}")
+    daily = payload.get("daily") or {}
+    hourly = payload.get("hourly") or {}
     times = daily.get("time") or []
     temps = daily.get("temperature_2m_max") or []
-    rain = daily.get("precipitation_sum") or []
-    cloud = daily.get("cloud_cover_mean") or []
-    return [
-        {
-            "label": weekday_label(times[index]),
-            "temp": None if temps[index] is None else float(temps[index]),
-            "tile": sky_tile(
-                None if index >= len(rain) or rain[index] is None else float(rain[index]),
-                None if index >= len(cloud) or cloud[index] is None else float(cloud[index]),
-            ),
-        }
-        for index in range(min(3, len(times)))
-    ]
+    days = []
+    for index in range(start_offset, min(start_offset + 3, len(times))):
+        days.append(
+            {
+                "label": weekday_label(times[index]),
+                "temp": None if temps[index] is None else float(temps[index]),
+                "tile": sky_tile(hourly, times[index], shown.hour if index == start_offset == 0 else 9),
+            }
+        )
+    return days
 
 
-def sky_tile(precip_mm: float | None, cloud_percent: float | None) -> str:
-    """Yellow when fair, white when cloudy, blue when the day has at least 0.5 mm of rain."""
-    if precip_mm is not None and precip_mm >= 0.5:
+def sky_tile(hourly: dict, date: str, from_hour: int) -> str:
+    """Met Office daytime, 9am to 9pm. Rain beats cloud. Cloudy is 6 oktas or more."""
+    wet = {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 71, 73, 75, 77, 80, 81, 82, 85, 86, 95, 96, 99}
+    start = max(9, from_hour)
+    points = []
+    for index, stamp in enumerate(hourly.get("time") or []):
+        day, clock = stamp.split("T")
+        if day != date:
+            continue
+        hour = int(clock[:2])
+        if hour < start or hour >= 21:
+            continue
+        precip = (hourly.get("precipitation") or [None])[index]
+        cloud = (hourly.get("cloud_cover") or [None])[index]
+        code = (hourly.get("weather_code") or [None])[index]
+        points.append((precip, cloud, code))
+    if not points:
+        return " "
+    if any((code in wet if code is not None else False) or (precip is not None and precip > 0) for precip, _, code in points):
         return BLUE
-    if cloud_percent is not None and cloud_percent >= 60:
+    clouds = [cloud for _, cloud, _ in points if cloud is not None]
+    if clouds and sum(clouds) / len(clouds) >= 75:
         return WHITE
-    if precip_mm is not None or cloud_percent is not None:
-        return YELLOW
-    return " "
+    return YELLOW
 
 
 def forecast_lines(places: list[dict]) -> list[str]:
@@ -650,7 +667,7 @@ def main() -> None:
     now = datetime.now(timezone.utc)
     if forecast_run(now):
         forecasts = [
-            {"name": location["name"], "days": daily_maxes(location["lat"], location["lon"])}
+            {"name": location["name"], "days": daily_maxes(location["lat"], location["lon"], now)}
             for location in locations
         ]
         lines = board_lines([], now, forecasts)
