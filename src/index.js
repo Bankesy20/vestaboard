@@ -4,7 +4,7 @@
 // A two-letter direction uses the gap in front of that column.
 // :29 shows today's highest temperature and the next two days.
 // A colour tile follows each high: yellow when fair, white when cloudy, blue when wet.
-// 24-hour rain is millimetres. 7-day rain is centimetres.
+// 24-hour rain is millimetres. 7-day rain is millimetres until 100 mm, then centimetres.
 
 const COLS = 15;
 const EA_ROOT = "https://environment.data.gov.uk/flood-monitoring";
@@ -240,6 +240,12 @@ function formatMm(value, width) {
   return text.slice(-width).padStart(width);
 }
 
+function formatSevenDay(mm) {
+  if (mm == null) return "??";
+  if (roundHalfEven(mm) >= 100) return formatMm(mm / 10, 2);
+  return formatMm(mm, 2);
+}
+
 function formatTemp(value) {
   if (value == null) return "??";
   return String(roundHalfEven(value)).padStart(2).slice(-2);
@@ -250,7 +256,7 @@ function locationLine(name, temp, mm24, mm7, force) {
   chars.splice(0, 4, ...name.slice(0, 4).padEnd(4));
   chars.splice(5, 2, ...formatTemp(temp));
   chars.splice(8, 2, ...formatMm(mm24, 2));
-  chars.splice(11, 2, ...formatMm(mm7 == null ? null : mm7 / 10, 2));
+  chars.splice(11, 2, ...formatSevenDay(mm7));
   const forceText = force == null ? "?" : String(Math.max(0, Math.min(12, force)));
   if (forceText.length === 1) chars[14] = forceText;
   else chars.splice(13, 2, ...forceText.slice(-2));

@@ -11,7 +11,7 @@ Contains Natural Resources Wales information © Natural Resources Wales and Data
 
 The Note is 3 rows by 15 columns. The :59 run keeps the current reading.
 The clock is UK time, 12-hour, on the hour. 24 is the last 24 hours of rain
-in millimetres, 7D is the last 7 days in centimetres. The wind column title
+in millimetres, 7D is the last 7 days in millimetres, or centimetres once it reaches 100 mm. The wind column title
 is the COPS direction, and both rows show Beaufort force. A two-letter
 direction uses the gap in front of that column. The :29 run shows three
 daily highs, starting today. A yellow, white, or blue tile follows each high:
@@ -363,6 +363,15 @@ def format_mm(value: float | None, width: int) -> str:
     return text[-width:].rjust(width)
 
 
+def format_seven_day(mm: float | None) -> str:
+    """Two characters. Millimetres until the total rounds to 100, then centimetres."""
+    if mm is None:
+        return "??"
+    if round(mm) >= 100:
+        return format_mm(mm / 10, 2)
+    return format_mm(mm, 2)
+
+
 def format_temp(value: float | None) -> str:
     if value is None:
         return "??"
@@ -382,8 +391,7 @@ def location_line(
     chars[0:4] = list(f"{name[:NAME_WIDTH]:<{NAME_WIDTH}}")
     chars[5:7] = list(format_temp(temp))
     chars[8:10] = list(format_mm(mm_24h, 2))
-    cm_7d = None if mm_7d is None else mm_7d / 10
-    chars[11:13] = list(format_mm(cm_7d, 2))
+    chars[11:13] = list(format_seven_day(mm_7d))
     force_text = "?" if force is None else str(max(0, min(12, force)))
     if len(force_text) == 1:
         chars[14] = force_text
@@ -620,7 +628,12 @@ def print_report(rows: list[dict], lines: list[str]) -> None:
             f"({station['reference']}, {station['grid'] or 'no grid'})"
         )
         mm_24 = "n/a" if rain["mm_24h"] is None else f"{rain['mm_24h']:.1f} mm"
-        mm_7 = "n/a" if rain["mm_7d"] is None else f"{rain['mm_7d'] / 10:.2f} cm"
+        if rain["mm_7d"] is None:
+            mm_7 = "n/a"
+        elif round(rain["mm_7d"]) >= 100:
+            mm_7 = f"{rain['mm_7d'] / 10:.1f} cm"
+        else:
+            mm_7 = f"{rain['mm_7d']:.1f} mm"
         print(
             f"  24h {mm_24} from {rain['readings_24h']} readings, "
             f"7d {mm_7} from {rain['readings']} readings, latest {latest}"
