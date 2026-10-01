@@ -2,7 +2,8 @@
 // :59 keeps the current reading, with the clock on the hour in UK 12-hour time.
 // The wind column title is the COPS direction. Both rows show Beaufort force.
 // A two-letter direction uses the gap in front of that column.
-// :29 shows three daytime highs. From 1:30pm the first day is tomorrow.
+// :29 shows three daytime highs, with today's date above the place names.
+// From 1:30pm the first day is tomorrow.
 // Colour follows the Met Office day, 9am to 9pm: blue if it rains, white if cloudy, yellow otherwise.
 // 24-hour rain is millimetres. 7-day rain is millimetres until 100 mm, then centimetres.
 
@@ -80,6 +81,7 @@ async function forecastLines(scheduledTime) {
   );
   const days = places[0].days;
   const header = Array(COLS).fill(" ");
+  header.splice(0, 4, ...ordinalDate(shown.day).padEnd(4));
   days.forEach((day, index) => header.splice(5 + index * 3, 2, ...day.label));
   const lines = [header.join("")];
   for (const place of places) {
@@ -149,7 +151,13 @@ function londonParts(date) {
     hourCycle: "h23",
   }).formatToParts(date);
   const value = (type) => parts.find((part) => part.type === type).value;
-  return { hour: Number(value("hour")) };
+  return { hour: Number(value("hour")), day: Number(value("day")) };
+}
+
+function ordinalDate(day) {
+  const teen = day % 100;
+  const suffix = teen >= 11 && teen <= 13 ? "TH" : { 1: "ST", 2: "ND", 3: "RD" }[day % 10] || "TH";
+  return `${day}${suffix}`;
 }
 
 function weekdayLabel(isoDate) {

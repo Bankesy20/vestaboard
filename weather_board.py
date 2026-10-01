@@ -13,16 +13,17 @@ The Note is 3 rows by 15 columns. The :59 run keeps the current reading.
 The clock is UK time, 12-hour, on the hour. 24 is the last 24 hours of rain
 in millimetres, 7D is the last 7 days in millimetres, or centimetres once it reaches 100 mm. The wind column title
 is the COPS direction, and both rows show Beaufort force. A two-letter
-direction uses the gap in front of that column. The :29 run shows three daytime highs.
-From 1:30pm the first day is tomorrow. The colour is the Met Office day, 9am to 9pm:
+direction uses the gap in front of that column. The :29 run shows three daytime highs,
+with today's date above the place names. From 1:30pm the first day is tomorrow.
+The colour is the Met Office day, 9am to 9pm:
 
     11:00°C 24 7D S
     COPS 16 .. .. 4
     FAGW 16 .. .. 5
 
-         SU MO TU
-    COPS 17Y17W22B
-    FAGW 17Y17W20B
+    1ST  SU  MO  TU
+    COPS 17Y 17W 22B
+    FAGW 17Y 17W 20B
 
 Set the two places in config.json. Preview locally with:
 
@@ -408,6 +409,15 @@ def forecast_run(when: datetime) -> bool:
     return when.astimezone(LONDON).minute < 30
 
 
+def ordinal_date(day: int) -> str:
+    teen = day % 100
+    if 11 <= teen <= 13:
+        suffix = "TH"
+    else:
+        suffix = {1: "ST", 2: "ND", 3: "RD"}.get(day % 10, "TH")
+    return f"{day}{suffix}"
+
+
 def weekday_label(iso_date: str) -> str:
     year, month, day = (int(part) for part in iso_date.split("-"))
     return ("MO", "TU", "WE", "TH", "FR", "SA", "SU")[datetime(year, month, day).weekday()]
@@ -469,9 +479,11 @@ def sky_tile(hourly: dict, date: str, from_hour: int) -> str:
     return YELLOW
 
 
-def forecast_lines(places: list[dict]) -> list[str]:
+def forecast_lines(places: list[dict], when: datetime) -> list[str]:
+    shown = (when + timedelta(minutes=1)).astimezone(LONDON)
     days = places[0]["days"]
     header = [" "] * COLS
+    header[0:4] = list(f"{ordinal_date(shown.day):<4}")
     for index, day in enumerate(days):
         header[5 + index * 3 : 7 + index * 3] = list(day["label"])
     lines = ["".join(header)]
@@ -519,7 +531,7 @@ def header_line(clock: str, direction: str) -> str:
 
 def board_lines(rows: list[dict], when: datetime, forecasts: list[dict] | None = None) -> list[str]:
     if forecast_run(when):
-        return forecast_lines(forecasts or [])
+        return forecast_lines(forecasts or [], when)
     cops = next((row["wind_direction"] for row in rows if row["name"].strip() == "COPS"), "?")
     lines = [header_line(clock_label(when), cops)]
     for row in rows:
