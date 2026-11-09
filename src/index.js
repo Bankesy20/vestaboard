@@ -1,5 +1,6 @@
 // Same Note layout as weather_board.py. Cloudflare runs this at :29 and :59.
-// :59 keeps the current reading, with the clock on the hour in UK 12-hour time.
+// :59 keeps the current reading. The top left is Copse sunrise or sunset:
+// sunrise until two hours after sunrise, then sunset until two hours after sunset.
 // The wind column title is the COPS direction. Both rows show Beaufort force.
 // A two-letter direction uses the gap in front of that column.
 // :29 shows three daytime highs, with today's date above the place names.
@@ -58,16 +59,21 @@ async function boardLines(scheduledTime) {
   const now = Date.now();
   const rows = [];
   let copsDirection = "?";
+  let sunDaily = null;
   for (const location of LOCATIONS) {
-    const [temp, windMs, windDegrees] = await currentConditions(location.lat, location.lon);
-    if (location.name === "COPS") copsDirection = windDirection(windDegrees);
+    const reading = await currentConditions(location.lat, location.lon, location.name === "COPS");
+    const [temp, windMs, windDegrees] = reading;
+    if (location.name === "COPS") {
+      copsDirection = windDirection(windDegrees);
+      sunDaily = reading[3];
+    }
     const rain =
       location.source === "nrw"
         ? await nrwRainfall(location.station, now)
         : await eaRainfall(location.station, now);
     rows.push(locationLine(location.name, temp, rain.mm24, rain.mm7, beaufort(windMs)));
   }
-  return [headerLine(clockLabel(scheduledTime), copsDirection), ...rows];
+  return [headerLine(sunLabel(sunDaily, new Date(scheduledTime + 60_000)), copsDirection), ...rows];
 }
 
 async function forecastLines(scheduledTime) {
@@ -166,17 +172,65 @@ function weekdayLabel(isoDate) {
   return ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][weekday];
 }
 
-function clockLabel(scheduledMs) {
-  const shown = new Date(scheduledMs + 60_000);
+function londonStamp(date) {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Europe/London",
-    hour: "numeric",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
     minute: "2-digit",
-    hourCycle: "h12",
-  }).formatToParts(shown);
-  const hour = parts.find((part) => part.type === "hour").value.replace(/^0/, "");
-  const minute = parts.find((part) => part.type === "minute").value;
-  return `${hour}:${minute}`;
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const value = (type) => parts.find((part) => part.type === type).value;
+  let hour = Number(value("hour"));
+  if (hour === 24) hour = 0;
+  return {
+    year: Number(value("year")),
+    month: Number(value("month")),
+    day: Number(value("day")),
+    hour,
+    minute: Number(value("minute")),
+  };
+}
+
+function parseLondon(isoLocal) {
+  const [datePart, timePart] = isoLocal.split("T");
+  const [year, month, day] = datePart.split("-").map(Number);
+  const [hour, minute] = timePart.split(":").map(Number);
+  const desired = Date.UTC(year, month - 1, day, hour, minute);
+  let utc = desired;
+  for (let i = 0; i < 2; i++) {
+    const seen = londonStamp(new Date(utc));
+    const seenUtc = Date.UTC(seen.year, seen.month - 1, seen.day, seen.hour, seen.minute);
+    utc += desired - seenUtc;
+  }
+  return new Date(utc);
+}
+
+function formatSunTime(isoLocal) {
+  if (!isoLocal) return "?";
+  const time = isoLocal.split("T")[1] || "";
+  const hour = Number(time.slice(0, 2)) % 12 || 12;
+  return `${hour}:${time.slice(3, 5)}`;
+}
+
+function sunLabel(daily, shown) {
+  const times = daily?.time ?? [];
+  const sunrises = daily?.sunrise ?? [];
+  const sunsets = daily?.sunset ?? [];
+  const stamp = londonStamp(shown);
+  const today = `${stamp.year}-${String(stamp.month).padStart(2, "0")}-${String(stamp.day).padStart(2, "0")}`;
+  const index = times.indexOf(today);
+  const sunrise = sunrises[index];
+  const sunset = sunsets[index];
+  if (index < 0 || !sunrise || !sunset) return "?";
+  const now = shown.getTime();
+  const risePlus = parseLondon(sunrise).getTime() + 2 * 60 * 60 * 1000;
+  const setPlus = parseLondon(sunset).getTime() + 2 * 60 * 60 * 1000;
+  if (now >= risePlus && now < setPlus) return formatSunTime(sunset);
+  if (now < risePlus) return formatSunTime(sunrise);
+  return formatSunTime(sunrises[index + 1] || sunrise);
 }
 
 async function getJson(url) {
@@ -244,12 +298,16 @@ function sumReadings(readings, now) {
   return { mm24, mm7 };
 }
 
-async function currentConditions(lat, lon) {
+async function currentConditions(lat, lon, withSun = false) {
+  const sun = withSun ? "&daily=sunrise,sunset&timezone=Europe%2FLondon&forecast_days=2" : "";
   const url =
     "https://api.open-meteo.com/v1/forecast" +
-    `?latitude=${lat}&longitude=${lon}&current=temperature_2m,wind_speed_10m,wind_direction_10m&wind_speed_unit=ms`;
-  const current = (await getJson(url)).current ?? {};
-  return [current.temperature_2m ?? null, current.wind_speed_10m ?? null, current.wind_direction_10m ?? null];
+    `?latitude=${lat}&longitude=${lon}&current=temperature_2m,wind_speed_10m,wind_direction_10m&wind_speed_unit=ms${sun}`;
+  const payload = await getJson(url);
+  const current = payload.current ?? {};
+  const reading = [current.temperature_2m ?? null, current.wind_speed_10m ?? null, current.wind_direction_10m ?? null];
+  if (withSun) reading.push(payload.daily ?? {});
+  return reading;
 }
 
 function windDirection(degrees) {

@@ -10,14 +10,15 @@ This uses Environment Agency rainfall data from the real-time data API (Beta).
 Contains Natural Resources Wales information © Natural Resources Wales and Database Right.
 
 The Note is 3 rows by 15 columns. The :59 run keeps the current reading.
-The clock is UK time, 12-hour, on the hour. 24 is the last 24 hours of rain
+The top left is Copse sunrise until two hours after sunrise, then sunset until
+two hours after sunset, in UK 12-hour time. 24 is the last 24 hours of rain
 in millimetres, 7D is the last 7 days in millimetres, or centimetres once it reaches 100 mm. The wind column title
 is the COPS direction, and both rows show Beaufort force. A two-letter
 direction uses the gap in front of that column. The :29 run shows three daytime highs,
 with today's date above the place names. From 1:30pm the first day is tomorrow.
 The colour is the Met Office day, 9am to 9pm:
 
-    11:00°C 24 7D S
+    7:18°C 24 7D S
     COPS 16 .. .. 4
     FAGW 16 .. .. 5
 
@@ -310,20 +311,26 @@ def nrw_rainfall(station_name: str, label: str, now: datetime) -> tuple[dict, di
     return station, sum_readings(readings, now)
 
 
-def current_conditions(lat: float, lon: float) -> tuple[float | None, float | None, float | None]:
-    query = urllib.parse.urlencode(
-        {
-            "latitude": f"{lat:.5f}",
-            "longitude": f"{lon:.5f}",
-            "current": "temperature_2m,wind_speed_10m,wind_direction_10m",
-            "wind_speed_unit": "ms",
-        }
-    )
-    payload = get_json(f"https://api.open-meteo.com/v1/forecast?{query}")
+def current_conditions(
+    lat: float, lon: float, with_sun: bool = False
+) -> tuple[float | None, float | None, float | None] | tuple[float | None, float | None, float | None, dict]:
+    params = {
+        "latitude": f"{lat:.5f}",
+        "longitude": f"{lon:.5f}",
+        "current": "temperature_2m,wind_speed_10m,wind_direction_10m",
+        "wind_speed_unit": "ms",
+    }
+    if with_sun:
+        params["daily"] = "sunrise,sunset"
+        params["timezone"] = "Europe/London"
+        params["forecast_days"] = 2
+    payload = get_json(f"https://api.open-meteo.com/v1/forecast?{urllib.parse.urlencode(params)}")
     current = payload.get("current") or {}
     temp = float(current["temperature_2m"]) if "temperature_2m" in current else None
     speed = float(current["wind_speed_10m"]) if "wind_speed_10m" in current else None
     direction = float(current["wind_direction_10m"]) if "wind_direction_10m" in current else None
+    if with_sun:
+        return temp, speed, direction, payload.get("daily") or {}
     return temp, speed, direction
 
 
@@ -502,15 +509,38 @@ def forecast_lines(places: list[dict], when: datetime) -> list[str]:
     return lines
 
 
-def clock_label(when: datetime) -> str:
-    """UK 12-hour label. A :29 run is 4:30, a :59 run is the next hour."""
-    local = when.astimezone(LONDON)
-    if local.minute < 30:
-        shown = local.replace(minute=30, second=0, microsecond=0)
-    else:
-        shown = (local + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-    hour = shown.hour % 12 or 12
-    return f"{hour}:{shown.minute:02d}"
+def format_sun_time(iso_local: str | None) -> str:
+    if not iso_local or "T" not in iso_local:
+        return "?"
+    hour, minute = iso_local.split("T", 1)[1].split(":")[:2]
+    return f"{int(hour) % 12 or 12}:{minute[:2]}"
+
+
+def sun_label(daily: dict | None, when: datetime) -> str:
+    """Sunrise until two hours after it, then sunset until two hours after that."""
+    shown = (when + timedelta(minutes=1)).astimezone(LONDON)
+    times = (daily or {}).get("time") or []
+    sunrises = (daily or {}).get("sunrise") or []
+    sunsets = (daily or {}).get("sunset") or []
+    try:
+        index = times.index(shown.date().isoformat())
+    except ValueError:
+        return "?"
+    sunrise = sunrises[index] if index < len(sunrises) else None
+    sunset = sunsets[index] if index < len(sunsets) else None
+    if not sunrise or not sunset:
+        return "?"
+
+    def parse(stamp: str) -> datetime:
+        return datetime.strptime(stamp[:16], "%Y-%m-%dT%H:%M").replace(tzinfo=LONDON)
+
+    rise_plus = parse(sunrise) + timedelta(hours=2)
+    set_plus = parse(sunset) + timedelta(hours=2)
+    if rise_plus <= shown < set_plus:
+        return format_sun_time(sunset)
+    if shown < rise_plus:
+        return format_sun_time(sunrise)
+    return format_sun_time(sunrises[index + 1] if index + 1 < len(sunrises) else sunrise)
 
 
 def header_line(clock: str, direction: str) -> str:
@@ -532,8 +562,9 @@ def header_line(clock: str, direction: str) -> str:
 def board_lines(rows: list[dict], when: datetime, forecasts: list[dict] | None = None) -> list[str]:
     if forecast_run(when):
         return forecast_lines(forecasts or [], when)
-    cops = next((row["wind_direction"] for row in rows if row["name"].strip() == "COPS"), "?")
-    lines = [header_line(clock_label(when), cops)]
+    cops_row = next((row for row in rows if row["name"].strip() == "COPS"), None)
+    cops = cops_row["wind_direction"] if cops_row else "?"
+    lines = [header_line(sun_label(cops_row.get("sun") if cops_row else None, when), cops)]
     for row in rows:
         lines.append(
             location_line(row["name"], row["temp_c"], row["mm_24h"], row["mm_7d"], row["wind_force"])
@@ -559,7 +590,11 @@ def collect(locations: list[dict]) -> list[dict]:
     now = datetime.now(timezone.utc)
     rows = []
     for location in locations:
-        temp, wind_ms, wind_degrees = current_conditions(location["lat"], location["lon"])
+        sun = None
+        if location["name"].strip() == "COPS":
+            temp, wind_ms, wind_degrees, sun = current_conditions(location["lat"], location["lon"], with_sun=True)
+        else:
+            temp, wind_ms, wind_degrees = current_conditions(location["lat"], location["lon"])
         rain = None
         station = None
         spec = location["rainfall"]
@@ -602,6 +637,7 @@ def collect(locations: list[dict]) -> list[dict]:
                 "lon": location["lon"],
                 "temp_c": temp,
                 "wind_direction": wind_direction(wind_degrees),
+                "sun": sun,
                 "wind_force": beaufort(wind_ms),
                 "mm_24h": rain["mm_24h"],
                 "mm_7d": rain["mm_7d"],
